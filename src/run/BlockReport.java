@@ -11,319 +11,242 @@ import io.dwg.entities.concrete.DwgCircle;
 import io.dwg.entities.concrete.DwgArc;
 import io.dwg.entities.concrete.DwgText;
 import io.dwg.entities.concrete.DwgMText;
+import io.dwg.entities.concrete.DwgPolyline2D;
+import io.dwg.entities.concrete.DwgLwPolyline;
+import io.dwg.entities.concrete.DwgPolyline3D;
+import io.dwg.entities.concrete.DwgPoint;
+import io.dwg.core.type.Point3D;
+import io.dwg.core.type.DwgHandleRef;
 
-import java.lang.reflect.Field;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class BlockReport {
-    
-    static class BlockInfo {
-        long handle;
-        String name;
-        String blockType;
-        List<String> properties = new ArrayList<>();
-        BlockInfo(long h) { this.handle = h; }
-    }
-    
-    static class InsertInfo {
-        long handle;
-        String blockName;
-        String position;
-        List<String> properties = new ArrayList<>();
-    }
-    
+
     public static void main(String[] args) throws Exception {
-        String[] paths = {
-            "samples/2018/210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg",
+        // 查找可用的 DWG 文件
+        List<String> testFiles = new ArrayList<>();
+        String[] candidates = {
             "samples/2018/Dynblocks.dwg",
+            "samples/2018/Arc.dwg",
+            "samples/2018/circle.dwg",
+            "samples/2018/Line.dwg",
+            "samples/2018/Text.dwg",
+            "samples/2018/Polyline.dwg",
+            "samples/2013/Arc.dwg",
+            "samples/2010/Arc.dwg",
+            "samples/2007/ATMOS-DC22S.dwg",
+            "samples/example_2018.dwg",
+            "samples/sample_2018.dwg",
         };
-        
-        String path = null;
-        for (String p : paths) {
-            if (new java.io.File(p).exists()) { path = p; break; }
+        for (String f : candidates) {
+            if (new java.io.File(f).exists()) testFiles.add(f);
         }
-        if (path == null) { System.out.println("No R2018 DWG found."); return; }
-        
-        System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║              DWG BLOCK ANALYSIS REPORT                        ║");
-        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+
+        System.out.println("==========================================");
+        System.out.println("   DWG 块解析报告 (Block Analysis)");
+        System.out.println("==========================================");
         System.out.println();
-        System.out.println("File: " + path);
-        
+        System.out.println("可解析文件数量: " + testFiles.size());
+        System.out.println();
+
+        for (String path : testFiles) {
+            try {
+                analyzeFile(path);
+            } catch (Exception e) {
+                System.out.println("✗ 解析失败: " + path + " - " + e.getMessage());
+            }
+        }
+
+        System.out.println();
+        System.out.println("==========================================");
+        System.out.println("   报告结束 (End of Report)");
+        System.out.println("==========================================");
+    }
+
+    static void analyzeFile(String path) throws Exception {
+        System.out.println("──────────────────────────────────────────");
+        System.out.println("文件: " + path);
+
         DwgDocument doc = DwgReader.defaultReader().open(Paths.get(path));
-        System.out.println("Version: " + doc.version());
-        
         Map<Long, DwgObject> objects = doc.objectMap();
-        int totalObjects = objects.size();
-        System.out.println("Total objects: " + totalObjects);
-        System.out.println();
-        
-        // === Phase 1: Object type summary ===
-        System.out.println("┌───────────────────────────────────────────────────────────────┐");
-        System.out.println("│ OBJECT TYPE BREAKDOWN                                         │");
-        System.out.println("└───────────────────────────────────────────────────────────────┘");
-        
-        Map<String, Integer> typeCounts = new java.util.LinkedHashMap<>();
-        int totalEntities = 0;
+
+        System.out.println("版本: " + doc.version());
+        System.out.println("对象总数: " + objects.size());
+
+        // === Phase 1: 统计对象类型 ===
+        Map<String, Integer> typeCounts = new LinkedHashMap<>();
+        int entityCount = 0;
         for (DwgObject obj : objects.values()) {
             String name = obj.getClass().getSimpleName();
             typeCounts.merge(name, 1, Integer::sum);
-            if (isEntity(obj)) totalEntities++;
+            if (obj.isEntity()) entityCount++;
         }
-        
-        typeCounts.entrySet().stream()
-            .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
-            .limit(25)
-            .forEach(e -> {
-                int pct = (int)((e.getValue() * 100.0) / totalObjects);
-                System.out.printf("  %-25s : %5d  (%d%%)%n", e.getKey(), e.getValue(), pct);
-            });
-        System.out.println("  " + "-".repeat(55));
-        System.out.printf("  %-25s : %5d%n", "Total entities", totalEntities);
+
+        // 按数量排序取前 15 个
+        List<Map.Entry<String, Integer>> sortedTypes = new ArrayList<>(typeCounts.entrySet());
+        sortedTypes.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+
         System.out.println();
-        
-        // === Phase 2: Block Definitions ===
-        System.out.println("┌───────────────────────────────────────────────────────────────┐");
-        System.out.println("│ BLOCK DEFINITIONS (BLOCK_HEADER objects)                      │");
-        System.out.println("└───────────────────────────────────────────────────────────────┘");
-        
-        List<BlockInfo> blocks = new ArrayList<>();
-        Map<Long, String> blockHandleToName = new java.util.HashMap<>();
-        int blockNum = 1;
-        for (Map.Entry<Long, DwgObject> entry : objects.entrySet()) {
-            DwgObject obj = entry.getValue();
+        System.out.println("  【对象类型分布 (Top 15)】");
+        for (int i = 0; i < Math.min(15, sortedTypes.size()); i++) {
+            Map.Entry<String, Integer> e = sortedTypes.get(i);
+            int pct = (int)((e.getValue() * 100.0) / objects.size());
+            System.out.printf("    %-28s : %5d  (%d%%)%n", e.getKey(), e.getValue(), pct);
+        }
+        System.out.println("    " + "-".repeat(45));
+        System.out.printf("    %-28s : %5d%n", "实体 (Entities)", entityCount);
+
+        // === Phase 2: Block Definitions (BLOCK_HEADER) ===
+        List<DwgBlockHeader> blocks = new ArrayList<>();
+        Map<Long, String> handleToBlockName = new HashMap<>();
+
+        for (DwgObject obj : objects.values()) {
             if (obj instanceof DwgBlockHeader) {
-                BlockInfo bi = new BlockInfo(entry.getKey());
-                
-                // Try to get block name from object fields
-                bi.name = extractBlockName(obj, entry.getKey());
-                bi.blockType = determineBlockType(bi.name);
-                bi.properties = extractProperties(obj);
-                
-                blocks.add(bi);
-                blockHandleToName.put(entry.getKey(), bi.name);
-                
-                System.out.println();
-                System.out.println("  BLOCK #" + blockNum + ": " + bi.name);
-                System.out.println("    Handle  : 0x" + Long.toHexString(entry.getKey()));
-                System.out.println("    Type    : " + bi.blockType);
-                for (String prop : bi.properties) {
-                    System.out.println("    " + prop);
-                }
-                blockNum++;
+                blocks.add((DwgBlockHeader)obj);
             }
         }
+
         System.out.println();
-        System.out.println("  Total block definitions: " + blocks.size());
-        System.out.println();
-        
+        System.out.println("  【块定义 (Block Definitions)】 共 " + blocks.size() + " 个");
+
+        if (blocks.isEmpty()) {
+            System.out.println("    (未找到 BLOCK_HEADER 对象)");
+        } else {
+            int idx = 1;
+            for (DwgBlockHeader bh : blocks) {
+                String name = bh.blockName();
+                if (name == null || name.isEmpty()) name = "(无名)";
+                long handle = 0;
+                try {
+                    handle = bh.handle();
+                } catch (Exception e) {}
+
+                handleToBlockName.put(handle, name);
+
+                String flagsStr = describeBlockFlags(bh.flags());
+                Point3D bp = bh.basePoint();
+                String basePointStr = bp != null ?
+                    String.format("(%.2f, %.2f, %.2f)", bp.x(), bp.y(), bp.z()) :
+                    "(未知)";
+
+                System.out.println();
+                System.out.println("    Block #" + idx + ": " + name);
+                System.out.println("      Handle    : 0x" + Long.toHexString(handle));
+                System.out.println("      Flags     : 0x" + String.format("%04X", bh.flags()) + " " + flagsStr);
+                System.out.println("      BasePoint : " + basePointStr);
+                if (bh.xrefPath() != null && !bh.xrefPath().isEmpty()) {
+                    System.out.println("      XrefPath  : " + bh.xrefPath());
+                }
+                idx++;
+            }
+        }
+
         // === Phase 3: Block References (INSERT) ===
-        System.out.println("┌───────────────────────────────────────────────────────────────┐");
-        System.out.println("│ BLOCK REFERENCES (INSERT objects)                             │");
-        System.out.println("└───────────────────────────────────────────────────────────────┘");
-        
-        List<InsertInfo> inserts = new ArrayList<>();
-        int insertNum = 1;
-        Map<String, Integer> insertByBlock = new java.util.LinkedHashMap<>();
-        for (Map.Entry<Long, DwgObject> entry : objects.entrySet()) {
-            DwgObject obj = entry.getValue();
+        List<DwgInsert> inserts = new ArrayList<>();
+        Map<String, Integer> insertByBlock = new LinkedHashMap<>();
+
+        for (DwgObject obj : objects.values()) {
             if (obj instanceof DwgInsert) {
-                InsertInfo ii = new InsertInfo();
-                ii.handle = entry.getKey();
-                ii.blockName = extractInsertBlockName(obj);
-                ii.position = extractPosition(obj);
-                ii.properties = extractProperties(obj);
-                inserts.add(ii);
-                insertByBlock.merge(ii.blockName, 1, Integer::sum);
-                
-                System.out.println();
-                System.out.println("  INSERT #" + insertNum + ": " + ii.blockName);
-                System.out.println("    Handle  : 0x" + Long.toHexString(entry.getKey()));
-                System.out.println("    Position: " + ii.position);
-                for (String prop : ii.properties) {
-                    System.out.println("    " + prop);
-                }
-                insertNum++;
+                inserts.add((DwgInsert)obj);
             }
         }
+
         System.out.println();
-        System.out.println("  Total block references: " + inserts.size());
-        System.out.println();
-        if (!insertByBlock.isEmpty()) {
-            System.out.println("  Block reference frequency:");
-            insertByBlock.entrySet().stream()
-                .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
-                .forEach(e -> System.out.printf("    %-30s : %d%n", e.getKey(), e.getValue()));
+        System.out.println("  【块引用 (INSERT 引用)】 共 " + inserts.size() + " 个");
+
+        if (inserts.isEmpty()) {
+            System.out.println("    (未找到 INSERT 实体)");
+        } else {
+            int idx = 1;
+            for (DwgInsert ins : inserts) {
+                // 从 blockHeaderHandle 查找对应的块名
+                String blockName = "(未知块)";
+                try {
+                    DwgHandleRef href = ins.blockHeaderHandle();
+                    if (href != null) {
+                        long h = href.rawHandle();
+                        blockName = handleToBlockName.getOrDefault(h,
+                            "(未映射:0x" + Long.toHexString(h) + ")");
+                        insertByBlock.merge(blockName, 1, Integer::sum);
+                    }
+                } catch (Exception e) {}
+
+                Point3D pt = ins.insertionPoint();
+                String pos = pt != null ?
+                    String.format("(%.2f, %.2f, %.2f)", pt.x(), pt.y(), pt.z()) :
+                    "(未知)";
+
+                System.out.println();
+                System.out.println("    Insert #" + idx + ": " + blockName);
+                System.out.println("      Position : " + pos);
+                System.out.printf("      Scale    : (%.2f, %.2f, %.2f)%n", ins.xScale(), ins.yScale(), ins.zScale());
+                System.out.printf("      Rotation : %.4f rad (%.2f°)%n", ins.rotation(), Math.toDegrees(ins.rotation()));
+                if (ins.hasAttribs()) System.out.println("      HasAttrs : true");
+                idx++;
+            }
+
+            // 块引用频率统计
+            if (!insertByBlock.isEmpty()) {
+                System.out.println();
+                System.out.println("    块引用频率:");
+                List<Map.Entry<String, Integer>> sortedRefs = new ArrayList<>(insertByBlock.entrySet());
+                sortedRefs.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+                for (Map.Entry<String, Integer> e : sortedRefs) {
+                    System.out.printf("      %-30s : %d%n", e.getKey(), e.getValue());
+                }
+            }
+        }
+
+        // === Phase 4: Block End 标记 ===
+        int blockEndCount = 0;
+        for (DwgObject obj : objects.values()) {
+            if (obj instanceof DwgBlockEnd) blockEndCount++;
         }
         System.out.println();
-        
-        // === Phase 4: Geometry Entities ===
-        System.out.println("┌───────────────────────────────────────────────────────────────┐");
-        System.out.println("│ GEOMETRY ENTITIES (by type)                                   │");
-        System.out.println("└───────────────────────────────────────────────────────────────┘");
-        
+        System.out.println("  【块结束标记 (BLOCK_END)】 共 " + blockEndCount + " 个");
+
+        // === Phase 5: 几何实体快速统计 ===
         int lines = 0, circles = 0, arcs = 0, texts = 0;
+        int lwpolys = 0, poly2d = 0, poly3d = 0, points = 0;
         for (DwgObject obj : objects.values()) {
             if (obj instanceof DwgLine) lines++;
             else if (obj instanceof DwgCircle) circles++;
             else if (obj instanceof DwgArc) arcs++;
             else if (obj instanceof DwgText || obj instanceof DwgMText) texts++;
+            else if (obj instanceof DwgLwPolyline) lwpolys++;
+            else if (obj instanceof DwgPolyline2D) poly2d++;
+            else if (obj instanceof DwgPolyline3D) poly3d++;
+            else if (obj instanceof DwgPoint) points++;
         }
-        
-        System.out.println("  LINES     : " + lines);
-        System.out.println("  CIRCLES   : " + circles);
-        System.out.println("  ARCS      : " + arcs);
-        System.out.println("  TEXT/MTEXT: " + texts);
+
         System.out.println();
-        
-        // === Phase 5: Block-end markers ===
-        System.out.println("┌───────────────────────────────────────────────────────────────┐");
-        System.out.println("│ BLOCK END MARKERS                                             │");
-        System.out.println("└───────────────────────────────────────────────────────────────┘");
-        
-        int blockEndCount = 0;
-        for (DwgObject obj : objects.values()) {
-            if (obj instanceof DwgBlockEnd) blockEndCount++;
+        System.out.println("  【几何实体统计】");
+        if (lines > 0) System.out.println("    LINE (直线)           : " + lines);
+        if (circles > 0) System.out.println("    CIRCLE (圆)           : " + circles);
+        if (arcs > 0) System.out.println("    ARC (圆弧)            : " + arcs);
+        if (lwpolys > 0) System.out.println("    LWPOLYLINE (轻多段线) : " + lwpolys);
+        if (poly2d > 0) System.out.println("    POLYLINE_2D (2D多段线): " + poly2d);
+        if (poly3d > 0) System.out.println("    POLYLINE_3D (3D多段线): " + poly3d);
+        if (texts > 0) System.out.println("    TEXT/MTEXT (文字)     : " + texts);
+        if (points > 0) System.out.println("    POINT (点)            : " + points);
+        if (lines+circles+arcs+lwpolys+poly2d+poly3d+texts+points == 0) {
+            System.out.println("    (无标准几何实体)");
         }
-        System.out.println("  BLOCK_END objects: " + blockEndCount);
+
         System.out.println();
-        
-        // === Summary ===
-        System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║                    SUMMARY                                    ║");
-        System.out.println("╚══════════════════════════════════════════════════════════════╝");
-        System.out.println("  File              : " + path);
-        System.out.println("  DWG Version       : " + doc.version());
-        System.out.println("  Total objects     : " + totalObjects);
-        System.out.println("  Total entities    : " + totalEntities);
-        System.out.println("  Block definitions : " + blocks.size());
-        System.out.println("    - Model Space   : " + (int)blocks.stream().filter(b -> b.blockType.equals("Model Space")).count());
-        System.out.println("    - Paper Space   : " + (int)blocks.stream().filter(b -> b.blockType.equals("Paper Space")).count());
-        System.out.println("    - Custom blocks : " + (int)blocks.stream().filter(b -> b.blockType.equals("Custom Block")).count());
-        System.out.println("  Block references  : " + inserts.size());
-        System.out.println("  Block end markers : " + blockEndCount);
+        System.out.println("  ✓ 解析完成");
         System.out.println();
-        
-        System.out.println("  Block definitions found:");
-        for (BlockInfo bi : blocks) {
-            System.out.println("    - " + bi.name + " (0x" + Long.toHexString(bi.handle) + ")");
-        }
-        System.out.println();
-        System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.println("║                END OF ANALYSIS REPORT                        ║");
-        System.out.println("╚══════════════════════════════════════════════════════════════╝");
     }
-    
-    static boolean isEntity(DwgObject obj) {
-        String n = obj.getClass().getSimpleName();
-        return n.contains("Line") || n.contains("Circle") || n.contains("Arc") ||
-               n.contains("Polyline") || n.contains("Text") || n.contains("Insert") ||
-               n.contains("Block") || n.contains("Dimension") || n.contains("Solid") ||
-               n.contains("Surface") || n.contains("Body") || n.contains("Shape") ||
-               n.contains("Viewport") || n.contains("Trace") || n.contains("Mline");
-    }
-    
-    static String determineBlockType(String name) {
-        if (name == null || name.isEmpty()) return "Custom Block";
-        String ln = name.toUpperCase().trim();
-        if (ln.contains("*MODEL")) return "Model Space";
-        if (ln.contains("*PAPER")) return "Paper Space";
-        if (ln.startsWith("*")) return "System Block";
-        return "Custom Block";
-    }
-    
-    static String extractBlockName(DwgObject obj, long handle) {
-        // Try to get a readable name from the object using reflection
-        try {
-            for (Field f : getAllFields(obj.getClass())) {
-                f.setAccessible(true);
-                String fn = f.getName().toLowerCase();
-                if (fn.contains("name") || fn.contains("block") || fn.equals("n")) {
-                    Object val = f.get(obj);
-                    if (val != null && val instanceof String && !((String)val).isEmpty()) {
-                        return (String)val;
-                    }
-                }
-            }
-        } catch (Exception e) {}
-        
-        // Fallback: use toString() and extract name
-        String str = obj.toString();
-        if (str.contains("name") || str.contains("Name")) {
-            int idx = str.toLowerCase().indexOf("name");
-            int start = str.indexOf("=", idx);
-            if (start > 0) {
-                int end = str.indexOf(",", start);
-                if (end > 0) return str.substring(start + 1, end).trim();
-            }
-        }
-        return "Block_0x" + Long.toHexString(handle);
-    }
-    
-    static String extractInsertBlockName(DwgObject obj) {
-        try {
-            for (Field f : getAllFields(obj.getClass())) {
-                f.setAccessible(true);
-                String fn = f.getName().toLowerCase();
-                if (fn.contains("block") || fn.contains("name") || fn.contains("blockname")) {
-                    Object val = f.get(obj);
-                    if (val != null && val instanceof String && !((String)val).isEmpty()) {
-                        return (String)val;
-                    }
-                }
-            }
-        } catch (Exception e) {}
-        return "Unknown Block";
-    }
-    
-    static String extractPosition(DwgObject obj) {
-        double x = 0, y = 0, z = 0;
-        boolean found = false;
-        try {
-            for (Field f : getAllFields(obj.getClass())) {
-                f.setAccessible(true);
-                String fn = f.getName().toLowerCase();
-                Object val = f.get(obj);
-                if (val instanceof Number) {
-                    double d = ((Number)val).doubleValue();
-                    if (fn.equals("x") || fn.contains("xcoord") || fn.contains("insx")) { x = d; found = true; }
-                    else if (fn.equals("y") || fn.contains("ycoord") || fn.contains("insy")) { y = d; found = true; }
-                    else if (fn.equals("z") || fn.contains("zcoord") || fn.contains("insz")) { z = d; found = true; }
-                }
-            }
-        } catch (Exception e) {}
-        if (found) return String.format("(%.2f, %.2f, %.2f)", x, y, z);
-        return "(unknown)";
-    }
-    
-    static List<String> extractProperties(DwgObject obj) {
-        List<String> props = new ArrayList<>();
-        try {
-            for (Field f : getAllFields(obj.getClass())) {
-                f.setAccessible(true);
-                Object val = f.get(obj);
-                if (val != null) {
-                    String str = val.toString();
-                    if (str.length() < 80 && !str.contains("@") && !str.equals("0") && !str.equals("0.0")) {
-                        props.add(f.getName() + " = " + str);
-                    }
-                }
-                if (props.size() >= 10) break;
-            }
-        } catch (Exception e) {}
-        return props;
-    }
-    
-    static List<Field> getAllFields(Class<?> type) {
-        List<Field> fields = new ArrayList<>();
-        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
-            for (Field f : c.getDeclaredFields()) {
-                if (!f.getName().startsWith("this$")) fields.add(f);
-            }
-        }
-        return fields;
+
+    static String describeBlockFlags(int flags) {
+        List<String> parts = new ArrayList<>();
+        if ((flags & 0x01) != 0) parts.add("匿名块");
+        if ((flags & 0x02) != 0) parts.add("有属性");
+        if ((flags & 0x04) != 0) parts.add("外部参照");
+        if ((flags & 0x08) != 0) parts.add("外部参照覆盖");
+        if ((flags & 0x10) != 0) parts.add("依赖外部参照");
+        if ((flags & 0x20) != 0) parts.add("已解析外部参照");
+        return parts.isEmpty() ? "(普通块)" : "[" + String.join(", ", parts) + "]";
     }
 }
