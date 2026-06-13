@@ -19,15 +19,15 @@ public class DwgFileStructureHandlerFactory {
             case R2000:
                 return new io.dwg.format.r2000.R2000FileStructureHandler();
             case R2004:
-            case R2010:
-            case R2013:
-            case R2018:
-                // libredwg's decode.c (line 222-226) uses decode_R2004 for R2010+ files.
-                // R2010, R2013, R2018 share R2004 file structure (only version string differs).
                 return new io.dwg.format.r2004.R2004FileStructureHandler();
             case R2007:
-                // R2007 uses its own RS-encoded format (the only version using RS).
+            case R2010:
+            case R2013:
+                // R2007-R2013 use Page Map → Section Map based format (libredwg's decode_R2007).
                 return new io.dwg.format.r2007.R2007FileStructureHandler();
+            case R2018:
+                // R2018 (AC1032) uses a different plaintext header format without RS-encoding
+                return new io.dwg.format.r2018.R2018FileStructureHandler();
             default:
                 throw new DwgVersionException("Unsupported version: " + version);
         }

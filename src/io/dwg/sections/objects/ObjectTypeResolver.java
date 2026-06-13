@@ -1,5 +1,6 @@
 package io.dwg.sections.objects;
 
+import io.dwg.sections.classes.DwgClassDefinition;
 import io.dwg.sections.classes.DwgClassRegistry;
 import io.dwg.sections.objects.readers.*;
 
@@ -9,9 +10,52 @@ import java.util.Optional;
 
 /**
  * 객체 타입 번호 → ObjectReader 인스턴스 매핑.
+ * 클래스 레지스트리를 통해 동적으로 커스텀 클래스 번호를 표준 객체 타입에 매핑함.
  */
 public class ObjectTypeResolver {
     private final Map<Integer, ObjectReader> readers = new HashMap<>();
+    private final DwgClassRegistry classRegistry;
+    private static final Map<String, ObjectReader> DXF_NAME_TO_READER = new HashMap<>();
+
+    static {
+        DXF_NAME_TO_READER.put("ACDBBLOCKTABLE", new BlockHeaderObjectReader());
+        DXF_NAME_TO_READER.put("BLOCK", new BlockHeaderObjectReader());
+        DXF_NAME_TO_READER.put("BLOCK_HEADER", new BlockHeaderObjectReader());
+        DXF_NAME_TO_READER.put("ACDBBLOCKENDBLOCKTABLE", new BlockEndObjectReader());
+        DXF_NAME_TO_READER.put("ENDBLK", new BlockEndObjectReader());
+        DXF_NAME_TO_READER.put("BLOCK_END", new BlockEndObjectReader());
+        DXF_NAME_TO_READER.put("ACDBINSERT", new InsertObjectReader());
+        DXF_NAME_TO_READER.put("INSERT", new InsertObjectReader());
+        DXF_NAME_TO_READER.put("ACDBMINSERT", new MinsertObjectReader());
+        DXF_NAME_TO_READER.put("MINSERT", new MinsertObjectReader());
+        DXF_NAME_TO_READER.put("ACDBlAYERTABLE", new LayerObjectReader());
+        DXF_NAME_TO_READER.put("ACDBLAYERTABLE", new LayerObjectReader());
+        DXF_NAME_TO_READER.put("LAYER", new LayerObjectReader());
+        DXF_NAME_TO_READER.put("ACDBLINETYPETABLE", new LtypeObjectReader());
+        DXF_NAME_TO_READER.put("LTYPE", new LtypeObjectReader());
+        DXF_NAME_TO_READER.put("ACDBDICTIONARY", new DictionaryObjectReader());
+        DXF_NAME_TO_READER.put("DICTIONARY", new DictionaryObjectReader());
+        DXF_NAME_TO_READER.put("ACDBDICTIONARYVAR", new DictionaryVarObjectReader());
+        DXF_NAME_TO_READER.put("DICTIONARYVAR", new DictionaryVarObjectReader());
+        DXF_NAME_TO_READER.put("ACDBDICTIONARYWDFLT", new DictionaryObjectReader());
+        DXF_NAME_TO_READER.put("ACDBPLACEHOLDER", new PlaceholderReader());
+        DXF_NAME_TO_READER.put("PLACEHOLDER", new PlaceholderReader());
+        DXF_NAME_TO_READER.put("ACDBSORTENTSTABLE", new XrecordObjectReader());
+        DXF_NAME_TO_READER.put("ACDBSCALE", new ScaleObjectReader());
+        DXF_NAME_TO_READER.put("ACDBSCALELIST", new ScaleListObjectReader());
+        DXF_NAME_TO_READER.put("ACDBLAYOUT", new LayoutObjectReader());
+        DXF_NAME_TO_READER.put("LAYOUT", new LayoutObjectReader());
+        DXF_NAME_TO_READER.put("ACDBXRECORD", new XrecordObjectReader());
+        DXF_NAME_TO_READER.put("XRECORD", new XrecordObjectReader());
+    }
+
+    public ObjectTypeResolver() {
+        this.classRegistry = null;
+    }
+
+    public ObjectTypeResolver(DwgClassRegistry classRegistry) {
+        this.classRegistry = classRegistry;
+    }
 
     public void register(ObjectReader reader) {
         readers.put(reader.objectType(), reader);
@@ -22,11 +66,24 @@ public class ObjectTypeResolver {
     }
 
     public Optional<ObjectReader> resolve(int typeCode) {
-        return Optional.ofNullable(readers.get(typeCode));
+        ObjectReader r = readers.get(typeCode);
+        if (r != null) return Optional.of(r);
+        if (classRegistry != null) {
+            Optional<DwgClassDefinition> def = classRegistry.find(typeCode);
+            if (def.isPresent()) {
+                String dxf = def.get().dxfRecordName();
+                if (dxf != null) {
+                    ObjectReader nr = DXF_NAME_TO_READER.get(dxf.toUpperCase());
+                    if (nr != null) return Optional.of(nr);
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     public static ObjectTypeResolver defaultResolver(DwgClassRegistry classReg) {
-        ObjectTypeResolver resolver = new ObjectTypeResolver();
+        ObjectTypeResolver resolver = new ObjectTypeResolver(classReg);
+        // Entity readers
         resolver.register(new TextObjectReader());
         resolver.register(new AttdefObjectReader());
         resolver.register(new AttribObjectReader());

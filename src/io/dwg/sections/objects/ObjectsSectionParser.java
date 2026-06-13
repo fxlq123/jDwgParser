@@ -257,13 +257,23 @@ public class ObjectsSectionParser extends AbstractSectionParser<Map<Long, DwgObj
     }
 
     private DwgObject createObject(int typeCode) {
+        // 1. Try standard type code first
         DwgObjectType type = DwgObjectType.fromCode(typeCode);
+
+        // 2. If unknown, check class registry for DXF name mapping
+        if (type == DwgObjectType.UNKNOWN && classRegistry != null) {
+            type = classRegistry.find(typeCode)
+                .filter(def -> def.dxfRecordName() != null)
+                .map(def -> resolveDxfName(def.dxfRecordName()))
+                .orElse(DwgObjectType.UNKNOWN);
+        }
+
         return switch (type) {
             case TEXT                -> new DwgText();
             case ATTDEF              -> new DwgAttdef();
             case ATTRIB              -> new DwgAttrib();
             case SEQEND              -> new DwgSeqEnd();
-            case ENDBLK              -> new DwgXrecord();
+            case ENDBLK              -> new DwgBlockEnd();
             case INSERT              -> new DwgInsert();
             case MINSERT             -> new DwgMinsert();
             case VERTEX_2D           -> new DwgVertex2D();
@@ -361,25 +371,89 @@ public class ObjectsSectionParser extends AbstractSectionParser<Map<Long, DwgObj
     }
 
     private boolean isSkipHeaderType(int typeCode) {
-        if (typeCode == 0x2A) {  // DICTIONARY
-            return true;
-        }
+        // DICTIONARY and its variants
+        if (typeCode == 0x2A) return true;
+        // Alternate table entries
         if (typeCode == 0x35 || typeCode == 0x43 || typeCode == 0x45 ||
             typeCode == 0x49 || typeCode == 0x62 ||
             typeCode == 0x4F ||
-            typeCode == 0x42 || typeCode == 0x44 || typeCode == 0x46) {
-            return true;
-        }
-        if (typeCode >= 0x01 && typeCode <= 0x31) {
-            return true;
-        }
+            typeCode == 0x42 || typeCode == 0x44 || typeCode == 0x46) return true;
+        // Old entity type code range (most R13-R2000 entities)
+        if (typeCode >= 0x01 && typeCode <= 0x31) return true;
+        // LWPLINE, HATCH, OLE2FRAME, IMAGE, UNDERLAY, SURFACE, MESH, ACAD_PROXY_ENTITY
         if (typeCode == 0x3E || typeCode == 0x4B || typeCode == 0x4C ||
             typeCode == 0x51 || typeCode == 0x52 ||
             typeCode == 0x54 || typeCode == 0x55 || typeCode == 0x56 ||
-            typeCode == 0x5A) {
-            return true;
+            typeCode == 0x5A) return true;
+        // Extended range for R2007+ class numbers that are entities
+        // Check class registry for entity classification
+        if (classRegistry != null && classRegistry.find(typeCode).isPresent()) {
+            return classRegistry.find(typeCode).get().isEntity();
         }
         return false;
+    }
+
+    private static final Map<String, DwgObjectType> DXF_TYPE_MAP = new HashMap<>();
+    static {
+        DXF_TYPE_MAP.put("ACDBBLOCKTABLE", DwgObjectType.BLOCK_HEADER);
+        DXF_TYPE_MAP.put("BLOCK", DwgObjectType.BLOCK_HEADER);
+        DXF_TYPE_MAP.put("BLOCK_HEADER", DwgObjectType.BLOCK_HEADER);
+        DXF_TYPE_MAP.put("ACDBBLOCKENDBLOCKTABLE", DwgObjectType.BLOCK_END);
+        DXF_TYPE_MAP.put("ENDBLK", DwgObjectType.BLOCK_END);
+        DXF_TYPE_MAP.put("BLOCK_END", DwgObjectType.BLOCK_END);
+        DXF_TYPE_MAP.put("ACDBINSERT", DwgObjectType.INSERT);
+        DXF_TYPE_MAP.put("INSERT", DwgObjectType.INSERT);
+        DXF_TYPE_MAP.put("ACDBMINSERT", DwgObjectType.MINSERT);
+        DXF_TYPE_MAP.put("MINSERT", DwgObjectType.MINSERT);
+        DXF_TYPE_MAP.put("ACDBLAYERTABLE", DwgObjectType.LAYER);
+        DXF_TYPE_MAP.put("LAYER", DwgObjectType.LAYER);
+        DXF_TYPE_MAP.put("ACDBLINETYPETABLE", DwgObjectType.LTYPE);
+        DXF_TYPE_MAP.put("LTYPE", DwgObjectType.LTYPE);
+        DXF_TYPE_MAP.put("ACDBSTYLETABLE", DwgObjectType.STYLE);
+        DXF_TYPE_MAP.put("STYLE", DwgObjectType.STYLE);
+        DXF_TYPE_MAP.put("ACDBVIEWTABLE", DwgObjectType.VIEW);
+        DXF_TYPE_MAP.put("VIEW", DwgObjectType.VIEW);
+        DXF_TYPE_MAP.put("ACDBUCSTABLE", DwgObjectType.UCS);
+        DXF_TYPE_MAP.put("UCS", DwgObjectType.UCS);
+        DXF_TYPE_MAP.put("ACDBVPORTTABLE", DwgObjectType.VPORT);
+        DXF_TYPE_MAP.put("VPORT", DwgObjectType.VPORT);
+        DXF_TYPE_MAP.put("ACDBAPPTABLE", DwgObjectType.APPID);
+        DXF_TYPE_MAP.put("APPID", DwgObjectType.APPID);
+        DXF_TYPE_MAP.put("ACDBDIMSTYLETABLE", DwgObjectType.DIMSTYLE);
+        DXF_TYPE_MAP.put("DIMSTYLE", DwgObjectType.DIMSTYLE);
+        DXF_TYPE_MAP.put("ACDBDICTIONARY", DwgObjectType.DICTIONARY);
+        DXF_TYPE_MAP.put("DICTIONARY", DwgObjectType.DICTIONARY);
+        DXF_TYPE_MAP.put("ACDBDICTIONARYVAR", DwgObjectType.ACAD_DICTIONARYVAR);
+        DXF_TYPE_MAP.put("DICTIONARYVAR", DwgObjectType.ACAD_DICTIONARYVAR);
+        DXF_TYPE_MAP.put("ACDBDICTIONARYWDFLT", DwgObjectType.DICTIONARY);
+        DXF_TYPE_MAP.put("ACDBPLACEHOLDER", DwgObjectType.PLACEHOLDER);
+        DXF_TYPE_MAP.put("PLACEHOLDER", DwgObjectType.PLACEHOLDER);
+        DXF_TYPE_MAP.put("ACDBXRECORD", DwgObjectType.XRECORD);
+        DXF_TYPE_MAP.put("XRECORD", DwgObjectType.XRECORD);
+        DXF_TYPE_MAP.put("ACDBLAYOUT", DwgObjectType.LAYOUT);
+        DXF_TYPE_MAP.put("LAYOUT", DwgObjectType.LAYOUT);
+        DXF_TYPE_MAP.put("ACDBSCALELIST", DwgObjectType.ACAD_SCALE_LIST);
+        DXF_TYPE_MAP.put("SCALE_LIST", DwgObjectType.ACAD_SCALE_LIST);
+        DXF_TYPE_MAP.put("ACDBSCALE", DwgObjectType.SCALE);
+        DXF_TYPE_MAP.put("ACDBTABLE", DwgObjectType.ACAD_TABLE);
+        DXF_TYPE_MAP.put("ACDBTABLESTYLE", DwgObjectType.ACAD_TABLESTYLE);
+        DXF_TYPE_MAP.put("ACDBCELLSTYLE", DwgObjectType.ACAD_CELLSTYLE);
+        DXF_TYPE_MAP.put("ACDBPLOTSTYLENAME", DwgObjectType.ACAD_PLOTSTYLE);
+        DXF_TYPE_MAP.put("ACDBMATERIAL", DwgObjectType.ACAD_MATERIAL);
+        DXF_TYPE_MAP.put("ACDBVISUALSTYLE", DwgObjectType.VISUALSTYLE);
+        DXF_TYPE_MAP.put("VISUALSTYLE", DwgObjectType.VISUALSTYLE);
+        DXF_TYPE_MAP.put("ACDBFIELD", DwgObjectType.ACAD_FIELD);
+        DXF_TYPE_MAP.put("ACDBTABLECONTENT", DwgObjectType.ACAD_TABLE);
+        DXF_TYPE_MAP.put("ACDBSORTENTSTABLE", DwgObjectType.XRECORD);
+        DXF_TYPE_MAP.put("ACDBMLINESTYLE", DwgObjectType.MLINESTYLE);
+    }
+
+    private static DwgObjectType resolveDxfName(String dxfName) {
+        if (dxfName == null) return DwgObjectType.UNKNOWN;
+        String key = dxfName.toUpperCase();
+        DwgObjectType t = DXF_TYPE_MAP.get(key);
+        if (t != null) return t;
+        return DwgObjectType.UNKNOWN;
     }
 
     @Override
