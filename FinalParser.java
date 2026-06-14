@@ -1,353 +1,173 @@
-import io.dwg.core.io.BitStreamReader;
-import io.dwg.core.io.ByteBufferBitInput;
-import io.dwg.core.version.DwgVersion;
-import io.dwg.entities.DwgObject;
-import io.dwg.entities.concrete.DwgBlockHeader;
-import io.dwg.entities.concrete.DwgBlockBegin;
-import io.dwg.entities.concrete.DwgBlockEnd;
-import io.dwg.entities.concrete.DwgInsert;
-import io.dwg.sections.objects.ObjectsSectionParser;
+import java.nio.file.*;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.ByteOrder;
 import java.util.*;
 
 public class FinalParser {
+    static byte[] data;
+
+    static void dumpRange(int start, int length) {
+        for (int i = 0; i < length; i += 16) {
+            int pos = start + i;
+            if (pos >= data.length) break;
+            System.out.print(String.format("0x%04x: ", pos));
+            for (int j = 0; j < 16 && pos + j < data.length; j++) {
+                System.out.print(String.format("%02x ", data[pos + j] & 0xFF));
+            }
+            System.out.print("  ");
+            for (int j = 0; j < 16 && pos + j < data.length; j++) {
+                int c = data[pos + j] & 0xFF;
+                if (c >= 32 && c <= 126) System.out.print((char) c);
+                else System.out.print(".");
+            }
+            System.out.println();
+        }
+    }
+
     public static void main(String[] args) throws Exception {
-        byte[] data = Files.readAllBytes(Paths.get(
-            "210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg"));
-        DwgVersion version = DwgVersion.R2000;
+        data = Files.readAllBytes(Paths.get("210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg"));
 
-        // R2000: 对象存储在 section gaps 中
-        // 扫描每个 gap，提取对象数据
-        System.out.println("=== 扫描 section gaps 中的对象 ===");
+        // Key insight: objects are NOT contiguous! They're at specific offsets.
+        // Object format: [2-byte LE: size] [2 bytes: BS type code] [data: size-2 bytes]
+        //
+        // Known valid objects:
+        // 0x52b9: size=114, type=0x30 (BLOCK_HEADER, *Model_Space - no name in data)
+        // 0x6971: size=512, type=0x07 (INSERT, contains SSR, ACAD, SLDDIMSTYLE0-1)
 
-        // 已知的 gaps (从之前的分析):
-        //   0x50B9 - 0x8067, 0x83F5 - 0xCC3B, 0xCE57 - 0x11943
-        // 但我们用更简单的方式: 扫描整个文件
+        // Strategy:
+        // 1. Scan entire file for valid MS + BS type patterns
+        // 2. For each potential object: try to read MS (16-bit LE single-word), then BS type
+        // 3. Check BS type: opcode==1 (first 2 bits), value in {0x07, 0x30}
+        // 4. Look for text strings inside the object data
 
-        // 找到 section map (文件从 0x200 处开始有 section 表)
-        // 简化: 直接扫描文件中可能的对象数据区域
-        // 从 0x5000 到 0x12000
+        Map<String, int[]> blocks = new LinkedHashMap<>();  // block name -> [offset, size]
+        Map<String, Integer> blockRefs = new LinkedHashMap<>();  // block name -> reference count
+        int totalBLOCK_HEADER = 0;
+        int totalINSERT = 0;
 
-        // 先扫描前几个对象，了解结构
-        List<DwgObject> allObjects = new ArrayList<>();
-        Map<Integer, Integer> typeCount = new LinkedHashMap<>();
+        System.out.println("=== Scanning for BLOCK_HEADER (type=0x30) and INSERT (type=0x07) ===");
 
-        int scanStart = 0x5000;
-        int scanEnd = 0x12000;
-        int pos = scanStart;
+        // Scan for valid objects at every offset
+        Set<Integer> usedObjStarts = new HashSet<>();
+        List<int[]> blockHeaderObjs = new ArrayList<>();  // [start, size]
+        List<int[]> insertObjs = new ArrayList<>();
 
-        ByteBufferBitInput bbuf = new ByteBufferBitInput(data);
+        for (int pos = 0x5200; pos < data.length - 4; pos++) {
+            int lo = data[pos] & 0xFF;
+            int hi = data[pos + 1] & 0xFF;
+            int size = lo | (hi << 8);
+            boolean cont = (size & 0x8000) != 0;
+            size = size & 0x7FFF;
 
-        // 用 MS objSizeBytes 的方式扫描
-        while (pos < scanEnd - 16) {
-            bbuf.seek((long) pos * 8L);
-            BitStreamReader r = new BitStreamReader(bbuf, version);
+            if (cont) continue;
+            if (size < 10 || size > 3000) continue;  // reasonable range
+            if (pos + 2 + size > data.length) continue;
 
-            long startBitOffset = (long) pos * 8L;
-            int objSizeBytes;
-            try {
-                objSizeBytes = r.readModularShort();
-            } catch (Exception e) {
-                pos++;
-                continue;
-            }
+            int ds = pos + 2;
+            int b0 = data[ds] & 0xFF;
+            int b1 = data[ds + 1] & 0xFF;
+            int opcode = (b0 >> 6) & 3;
+            if (opcode != 1) continue;
 
-            if (objSizeBytes <= 0 || objSizeBytes > 0x4000) {
-                pos++;
-                continue;
-            }
+            int typeCode = ((b0 & 0x3F) << 2) | ((b1 >> 6) & 3);
 
-            // objDataStartBit
-            long objDataStartBit = bbuf.position();
-
-            // typeCode
-            int typeCode;
-            try {
-                typeCode = r.readBitShort();
-            } catch (Exception e) {
-                pos++;
-                continue;
-            }
-
-            if (typeCode < 0 || typeCode > 5000) {
-                pos++;
-                continue;
-            }
-
-            // 验证: 这个 objSize 有意义吗？
-            long nextBitOffset = objDataStartBit + (long) objSizeBytes * 8L;
-            int nextBytePos = (int) ((nextBitOffset + 7) / 8);
-            if (nextBytePos > scanEnd) {
-                pos++;
-                continue;
-            }
-
-            // 记录
-            typeCount.put(typeCode, typeCount.getOrDefault(typeCode, 0) + 1);
-
-            // 尝试解析 BLOCK_HEADER
-            if (typeCode == 48) {
-                try {
-                    DwgBlockHeader bh = new DwgBlockHeader();
-                    bh.setHandle(allObjects.size() + 1L);
-
-                    // 让 reader 从 objDataStartBit 开始解析
-                    bbuf.seek(objDataStartBit);
-                    BitStreamReader r2 = new BitStreamReader(bbuf, version);
-
-                    // common header + block_header 数据
-                    // 简化: 直接跳到 nextBytePos，用原始字节的子集
-
-                    // 提取这个对象的字节
-                    byte[] objData = new byte[objSizeBytes];
-                    int objDataStartByte = (int) ((objDataStartBit + 7) / 8);
-                    // 由于 MS 和 BS 可能不正好在字节边界上，我们需要更精确的方式
-                    // 用 jDwgParser 的实际 ObjectsSectionParser
-
-                    // 先做简单的: 从对象的第一个字节 (pos) 到 objSizeBytes 后
-                    // 用 parseObjectAt 的方式
-                    ByteBufferBitInput bbuf2 = new ByteBufferBitInput(data);
-                    bbuf2.seek((long) pos * 8L);
-                    BitStreamReader r3 = new BitStreamReader(bbuf2, version);
-
-                    int _objSize = r3.readModularShort();
-                    int _tc = r3.readBitShort();
-
-                    // 现在 r3 的位置是在 common data 开始
-                    // 用 ObjectsSectionParser 的实际逻辑
-                    if (_tc == 48) {
-                        bh = parseBlockHeader(r3, version);
-                        if (bh != null) {
-                            bh.setHandle(allObjects.size() + 1L);
-                            bh.setOffset(pos);
-                            allObjects.add(bh);
-                            System.out.println("  BLOCK_HEADER @ 0x" + Integer.toHexString(pos) +
-                                " objSize=" + objSizeBytes +
-                                " name='" + safeGetName(bh) + "'");
-                        }
-                    } else if (_tc == 7) {
-                        DwgInsert ins = parseInsert(r3, version);
-                        if (ins != null) {
-                            ins.setHandle(allObjects.size() + 1L);
-                            ins.setOffset(pos);
-                            allObjects.add(ins);
-                        }
-                    }
-                } catch (Exception e) {}
-            }
-
-            // 跳到下一个对象
-            pos = nextBytePos;
-        }
-
-        // 类型统计
-        System.out.println("\n=== 类型统计 ===");
-        List<Map.Entry<Integer, Integer>> sortedTypes = new ArrayList<>(typeCount.entrySet());
-        sortedTypes.sort((a, b) -> b.getValue().compareTo(a.getValue()));
-        int shown = 0;
-        for (Map.Entry<Integer, Integer> e : sortedTypes) {
-            System.out.printf("  type=%4d (0x%02X): %5d  %s%n",
-                e.getKey(), e.getKey(), e.getValue(), typeName(e.getKey()));
-            if (++shown >= 25) break;
-        }
-
-        // 总结 BLOCK_HEADER
-        System.out.println("\n=== BLOCK_HEADER 列表 ===");
-        int bhCount = 0;
-        for (DwgObject obj : allObjects) {
-            if (obj instanceof DwgBlockHeader) {
-                DwgBlockHeader bh = (DwgBlockHeader) obj;
-                System.out.printf("  [%d] h=0x%x offset=0x%x name='%s' base=(%.2f,%.2f,%.2f)%n",
-                    bhCount++, bh.getHandle(), bh.getOffset(),
-                    bh.getName() != null ? bh.getName() : "",
-                    bh.getBasePoint() != null ? bh.getBasePoint().x() : 0,
-                    bh.getBasePoint() != null ? bh.getBasePoint().y() : 0,
-                    bh.getBasePoint() != null ? bh.getBasePoint().z() : 0);
+            if (typeCode == 0x30) {
+                // Found a BLOCK_HEADER!
+                totalBLOCK_HEADER++;
+                blockHeaderObjs.add(new int[]{pos, size});
+                // Search for block name in data
+                String name = findNameInRange(ds + 2, ds + size, 64);
+                if (name != null) {
+                    blocks.put(name, new int[]{pos, size});
+                }
+                // Don't scan inside this object again
+                for (int skip = pos; skip < pos + 2 + size; skip++) usedObjStarts.add(skip);
+            } else if (typeCode == 0x07) {
+                // Found an INSERT!
+                totalINSERT++;
+                insertObjs.add(new int[]{pos, size});
+                // Search for block name in data
+                String name = findNameInRange(ds + 2, ds + size, 64);
+                if (name != null) {
+                    blockRefs.merge(name, 1, Integer::sum);
+                }
+                for (int skip = pos; skip < pos + 2 + size; skip++) usedObjStarts.add(skip);
             }
         }
 
-        // 统计 INSERT 引用
-        System.out.println("\n=== INSERT 引用统计 ===");
-        Map<String, Integer> insertRefs = new LinkedHashMap<>();
-        Map<Long, String> handleToName = new HashMap<>();
-        for (DwgObject obj : allObjects) {
-            if (obj instanceof DwgBlockHeader) {
-                DwgBlockHeader bh = (DwgBlockHeader) obj;
-                handleToName.put(bh.getHandle(), bh.getName() != null ? bh.getName() : "");
+        System.out.println("Found BLOCK_HEADER objects: " + totalBLOCK_HEADER);
+        System.out.println("Found INSERT objects: " + totalINSERT);
+
+        // Show all BLOCK_HEADER objects with their names
+        System.out.println("\n=== BLOCK_HEADER objects ===");
+        for (int[] bh : blockHeaderObjs) {
+            int ds = bh[0] + 2;
+            String name = findNameInRange(ds + 2, ds + bh[1], 64);
+            System.out.println(String.format("  @ 0x%04x: size=%d bytes, name='%s'",
+                    bh[0], bh[1], name));
+            // Show bytes
+            if (bh[1] <= 80) {
+                dumpRange(bh[0], bh[1] + 4);
+                System.out.println();
             }
         }
 
-        int insCount = 0;
-        for (DwgObject obj : allObjects) {
-            if (obj instanceof DwgInsert) {
-                insCount++;
-                DwgInsert ins = (DwgInsert) obj;
-                long bhHandle = ins.getBlockHeaderHandle() != null ? ins.getBlockHeaderHandle() : 0;
-                String bname = handleToName.getOrDefault(bhHandle, "UNKNOWN(0x" + Long.toHexString(bhHandle) + ")");
-                insertRefs.put(bname, insertRefs.getOrDefault(bname, 0) + 1);
-            }
+        // Show INSERT objects
+        System.out.println("\n=== INSERT objects ===");
+        for (int[] ins : insertObjs) {
+            int ds = ins[0] + 2;
+            String name = findNameInRange(ds + 2, ds + ins[1], 64);
+            System.out.println(String.format("  @ 0x%04x: size=%d bytes, block='%s'",
+                    ins[0], ins[1], name));
         }
 
-        System.out.println("共 " + insCount + " 个 INSERT");
-        for (Map.Entry<String, Integer> e : insertRefs.entrySet()) {
-            System.out.printf("  '%s': %d 次%n", e.getKey(), e.getValue());
+        // Final report
+        System.out.println("\n\n=========== FINAL ANALYSIS REPORT ===========");
+        System.out.println("File: 210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg");
+        System.out.println("Size: " + data.length + " bytes");
+        System.out.println("Version: AutoCAD R2000 (AC1015)");
+        System.out.println();
+        System.out.println("--- Block Definitions ---");
+        System.out.println("Total BLOCK_HEADER objects: " + totalBLOCK_HEADER);
+        List<String> sortedBlocks = new ArrayList<>(blocks.keySet());
+        Collections.sort(sortedBlocks);
+        for (String name : sortedBlocks) {
+            int[] info = blocks.get(name);
+            System.out.println(String.format("  '%s'  (@0x%04x, %d bytes)", name, info[0], info[1]));
         }
+        System.out.println();
+        System.out.println("--- Block Insertions ---");
+        System.out.println("Total INSERT objects: " + totalINSERT);
+        List<Map.Entry<String, Integer>> sortedRefs = new ArrayList<>(blockRefs.entrySet());
+        sortedRefs.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+        for (Map.Entry<String, Integer> e : sortedRefs) {
+            System.out.println(String.format("  '%s' : %d time(s)", e.getKey(), e.getValue()));
+        }
+        System.out.println();
+        System.out.println("=============================================");
     }
 
-    static String safeGetName(DwgBlockHeader bh) {
-        try { return bh.getName() != null ? bh.getName() : ""; }
-        catch (Exception e) { return ""; }
-    }
-
-    static DwgBlockHeader parseBlockHeader(BitStreamReader r, DwgVersion version) {
-        try {
-            DwgBlockHeader bh = new DwgBlockHeader();
-
-            // Entity common data
-            // bitsize (BL)
-            try { r.readBitLong(); } catch (Exception e) {}
-            // entity handle
-            try { r.readHandle(); } catch (Exception e) {}
-            // EED size (MS)
-            try {
-                int eedSize = r.readModularShort();
-                if (eedSize > 0 && eedSize < 1000) {
-                    // skip
-                    r.getInput().seek(r.getInput().position() + eedSize * 8L);
-                }
-            } catch (Exception e) {}
-            // owner handle
-            try { r.readHandle(); } catch (Exception e) {}
-            // num reactors
-            try {
-                int numReactors = r.readBitLong();
-                for (int i = 0; i < Math.min(numReactors, 100); i++) {
-                    try { r.readHandle(); } catch (Exception ex) { break; }
-                }
-            } catch (Exception e) {}
-            // xdict handle
-            try { r.readHandle(); } catch (Exception e) {}
-
-            // BLOCK_HEADER 特有
-            // block name: 1-byte length + ASCII
-            String name = readRawByteText(r);
-            bh.setName(name);
-
-            // flags (BS)
-            try { bh.setFlags(r.readBitShort()); } catch (Exception e) {}
-            // base point (3 BD)
-            try {
-                double x = r.readBitDouble();
-                double y = r.readBitDouble();
-                double z = r.readBitDouble();
-                bh.setBasePoint(new io.dwg.geometry.Point3D(x, y, z));
-            } catch (Exception e) {}
-            // xref path (1-byte length + ASCII)
-            try {
-                String xref = readRawByteText(r);
-                bh.setXrefPath(xref);
-            } catch (Exception e) {}
-
-            return bh;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    static DwgInsert parseInsert(BitStreamReader r, DwgVersion version) {
-        try {
-            DwgInsert ins = new DwgInsert();
-
-            // Entity common data
-            try { r.readBitLong(); } catch (Exception e) {}
-            try { r.readHandle(); } catch (Exception e) {}
-            try {
-                int eedSize = r.readModularShort();
-                if (eedSize > 0 && eedSize < 1000) {
-                    r.getInput().seek(r.getInput().position() + eedSize * 8L);
-                }
-            } catch (Exception e) {}
-            try { r.readHandle(); } catch (Exception e) {}
-            try {
-                int numReactors = r.readBitLong();
-                for (int i = 0; i < Math.min(numReactors, 100); i++) {
-                    try { r.readHandle(); } catch (Exception ex) { break; }
-                }
-            } catch (Exception e) {}
-            try { r.readHandle(); } catch (Exception e) {}
-
-            // INSERT 特有
-            try {
-                long bhHandle = r.readHandle();
-                ins.setBlockHeaderHandle(bhHandle);
-            } catch (Exception e) {}
-            try {
-                double x = r.readBitDouble();
-                double y = r.readBitDouble();
-                double z = r.readBitDouble();
-                ins.setInsertionPoint(new io.dwg.geometry.Point3D(x, y, z));
-            } catch (Exception e) {}
-            try {
-                double sx = r.readBitDouble();
-                double sy = r.readBitDouble();
-                double sz = r.readBitDouble();
-                ins.setScale(new io.dwg.geometry.Point3D(sx, sy, sz));
-            } catch (Exception e) {}
-            try {
-                double rot = r.readBitDouble();
-                ins.setRotationAngle(rot);
-            } catch (Exception e) {}
-
-            return ins;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    static String readRawByteText(BitStreamReader r) {
-        try {
-            // 对齐到字节
-            long bitPos = r.getInput().position();
-            long alignedByte = (bitPos + 7) / 8;
-            r.getInput().seek(alignedByte * 8L);
-
-            // 1-byte length
-            int len = 0;
-            for (int i = 0; i < 8; i++) len = (len << 1) | (r.getInput().readBit() ? 1 : 0);
-            if (len <= 0 || len > 200) return "";
-
+    // Search for a text string preceded by its length byte within a range
+    static String findNameInRange(int start, int end, int maxLen) {
+        for (int i = start; i < end - 2; i++) {
+            int len = data[i] & 0xFF;
+            if (len < 1 || len > maxLen || i + 1 + len > end) continue;
+            // Check if all chars are printable ASCII
+            boolean valid = true;
+            for (int j = 0; j < len; j++) {
+                int c = data[i + 1 + j] & 0xFF;
+                if (c < 32 || c > 126) { valid = false; break; }
+            }
+            if (!valid) continue;
             StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < len; i++) {
-                int ch = 0;
-                for (int j = 0; j < 8; j++) ch = (ch << 1) | (r.getInput().readBit() ? 1 : 0);
-                sb.append((char) ch);
+            for (int j = 0; j < len; j++) {
+                sb.append((char) data[i + 1 + j]);
             }
-            return sb.toString();
-        } catch (Exception e) { return ""; }
-    }
-
-    static String typeName(int code) {
-        String[] names = {
-            "UNUSED", "TEXT", "ATTDEF", "ATTRIB", "SEQEND", "ENDBLK", "", "INSERT", "MINSERT",
-            "", "V2D", "V3D", "VMESH", "VPF", "VPFF",
-            "PL2D", "PL3D", "ARC", "CIRCLE", "LINE",
-            "DIMO", "DIML", "DIMA", "DIM3",
-            "DIM2", "DIMR", "DIMD", "POINT", "FACE",
-            "PLPF", "PLPM", "SOLID", "TRACE", "SHAPE", "VPORT",
-            "EL", "SPL", "REG", "S3D", "BODY", "RAY", "XLINE", "DICT",
-            "", "MTEXT", "LEAD", "TOL", "MLINE", "BLKH", "BLKE",
-            "LTYPE", "LAYER", "STYLE"
-        };
-        if (code >= 0 && code < names.length && names[code] != null && !names[code].isEmpty()) return names[code];
-        switch(code) {
-            case 0x3C: return "GROUP";
-            case 0x4B: return "LWPLINE";
-            case 0x4C: return "HATCH";
-            case 0x4D: return "XRECORD";
-            case 0x50: return "LAYOUT";
-            default: return "?";
+            String s = sb.toString();
+            if (s.matches("[A-Za-z_*][A-Za-z0-9_*\\-]*") && s.length() >= 2) {
+                return s;
+            }
         }
+        return null;
     }
 }
