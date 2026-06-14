@@ -49,7 +49,7 @@ public class R2000BlockExtractor {
                     if (bi != null) blockMap.put(he.handle, bi);
                 } else if (typeCode == 0x07) {
                     // INSERT - 提取块句柄引用
-                    InsertInfo ii = extractInsertInfo(data, he.offset, objSize, he.handle);
+                    InsertInfo ii = extractInsertInfo(data, (int) he.offset, objSize, he.handle);
                     if (ii != null) insertMap.put(he.handle, ii);
                 }
             } catch (Exception e) {
