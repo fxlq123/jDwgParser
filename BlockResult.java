@@ -11,39 +11,65 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.*;
 
-public class BlockReport {
+public class BlockResult {
     public static void main(String[] args) throws Exception {
         byte[] data = Files.readAllBytes(Paths.get(
             "210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg"));
         DwgVersion version = DwgVersion.R2000;
         ObjectTypeResolver resolver = ObjectTypeResolver.defaultResolver(new DwgClassRegistry());
 
+        System.out.println("==================================================");
+        System.out.println("  FINAL RESULT: Block Definitions and References");
+        System.out.println("==================================================");
+        System.out.println("File: 210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg");
+        System.out.println("Version: R2000 (AC1015)");
+        System.out.println("Size: " + data.length + " bytes");
+
+        // 扫描整个文件
         Map<Long, DwgObject> objects = new LinkedHashMap<>();
         Map<Integer, Integer> typeCount = new LinkedHashMap<>();
         long nextHandle = 1;
-        int pos = 0x5000;
-        int end = 0x12000;
         int found = 0;
 
-        while (pos < end - 4) {
+        // 从已知的对象数据区域开始扫描
+        // R2000: 对象在 section gaps 中，已知在 0x5000 之后
+        int start = 0x5000;
+        int end = Math.min(data.length - 16, 0x12000);
+
+        System.out.println("\n扫描区域: 0x" + Integer.toHexString(start) + " - 0x" + Integer.toHexString(end));
+
+        int pos = start;
+        while (pos < end) {
             try {
                 // 创建从 pos 开始的 byte 数组
-                byte[] subData = Arrays.copyOfRange(data, pos, data.length);
-                ByteBuffer bb = ByteBuffer.wrap(subData);
-                ByteBufferBitInput buf = new ByteBufferBitInput(bb);
+                byte[] sub = Arrays.copyOfRange(data, pos, data.length);
+
+                // 使用 ByteBufferBitInput 解析
+                ByteBufferBitInput buf = new ByteBufferBitInput(ByteBuffer.wrap(sub));
                 BitStreamReader r = new BitStreamReader(buf, version);
 
+                // MS: 16-bit LE word
                 int objSize = r.readModularShort();
-                if (objSize <= 0 || objSize > 0x4000) { pos++; continue; }
 
+                // 检查 objSize 有效性
+                if (objSize <= 2 || objSize > 2000) {
+                    pos++;
+                    continue;
+                }
+
+                // BS: typeCode (从 bit 16 开始)
                 int typeCode = r.readBitShort();
-                if (typeCode < 0 || typeCode > 999) { pos++; continue; }
 
-                int nextOffset = pos + 2 + objSize;
-                if (nextOffset <= pos || nextOffset > end) { pos++; continue; }
+                // 检查 typeCode 有效性
+                if (typeCode < 0 || typeCode > 500) {
+                    pos++;
+                    continue;
+                }
 
+                // 记录类型
                 typeCount.put(typeCode, typeCount.getOrDefault(typeCode, 0) + 1);
 
+                // 尝试解析对象
                 DwgObject obj = createObject(typeCode);
                 if (obj != null) {
                     AbstractDwgObject ao = (AbstractDwgObject) obj;
@@ -51,32 +77,39 @@ public class BlockReport {
                     ao.setRawTypeCode(typeCode);
 
                     try {
+                        // Common header
                         int numReactors = r.readBitLong();
                         if (obj.isEntity() && obj instanceof AbstractDwgEntity) {
-                            buf.readBits(2); buf.readBits(2);
+                            buf.readBits(2); // entityMode
+                            buf.readBits(2); // lineType
                         }
                         ao.setOwnerHandle(new DwgHandleRef(r.readHandle()));
                         for (int i = 0; i < Math.min(numReactors, 20); i++) {
                             try { ao.addReactorHandle(new DwgHandleRef(r.readHandle())); }
                             catch (Exception ex) { break; }
                         }
+
+                        // Type-specific parsing
                         resolver.resolve(typeCode).ifPresent(reader -> {
                             try { reader.read(obj, r, version); } catch (Exception e) {}
                         });
+
                         objects.put(ao.handle(), obj);
                         found++;
                     } catch (Exception e) {}
                 }
-                pos = nextOffset;
-            } catch (Exception e) { pos++; }
+
+                // 下一个对象: pos + 2 (MS 是 2 字节 LE)
+                pos += 2;
+
+            } catch (Exception e) {
+                pos++;
+            }
         }
 
-        System.out.println("==================================================");
-        System.out.println("  FINAL RESULT: Block Definitions and References");
-        System.out.println("==================================================");
-        System.out.println("(Parsed " + found + " objects from " + data.length + " byte file)");
+        System.out.println("解析了 " + found + " 个对象");
 
-        // 块定义
+        // BLOCK_HEADER
         List<DwgBlockHeader> blockHeaders = new ArrayList<>();
         for (DwgObject obj : objects.values()) {
             if (obj.rawTypeCode() == 48 && obj instanceof DwgBlockHeader) {
@@ -85,20 +118,18 @@ public class BlockReport {
         }
 
         System.out.println("\n【块定义】共 " + blockHeaders.size() + " 个:");
-        for (int i = 0; i < blockHeaders.size(); i++) {
-            DwgBlockHeader bh = blockHeaders.get(i);
+        int idx = 0;
+        for (DwgBlockHeader bh : blockHeaders) {
             String name = bh.blockName() != null ? bh.blockName() : "(未命名)";
             double bx=0, by=0, bz=0;
             if (bh.basePoint() != null) {
                 bx = bh.basePoint().x(); by = bh.basePoint().y(); bz = bh.basePoint().z();
             }
-            int flags = bh.flags();
-            String xref = bh.xrefPath() != null ? bh.xrefPath() : "";
-            System.out.printf("  %d. '%s' (handle=%d, 基点: %.3f,%.3f,%.3f, flags=%d, xref='%s')%n",
-                i+1, name, bh.handle(), bx, by, bz, flags, xref);
+            System.out.printf("  %d. '%s' (handle=%d, 基点: %.3f, %.3f, %.3f)%n",
+                ++idx, name, bh.handle(), bx, by, bz);
         }
 
-        // INSERT 引用
+        // INSERT
         List<DwgInsert> inserts = new ArrayList<>();
         for (DwgObject obj : objects.values()) {
             if (obj.rawTypeCode() == 7 && obj instanceof DwgInsert) {
@@ -107,19 +138,16 @@ public class BlockReport {
         }
 
         // 构建 handle -> block name 映射
-        Map<Long, String> hmap = new HashMap<>();
+        Map<Long, String> handleNameMap = new HashMap<>();
         for (DwgBlockHeader bh : blockHeaders) {
-            hmap.put(bh.handle(), bh.blockName() != null ? bh.blockName() : "");
+            handleNameMap.put(bh.handle(), bh.blockName() != null ? bh.blockName() : "");
         }
 
         // 引用统计
         Map<String, Integer> refCount = new LinkedHashMap<>();
         for (DwgInsert ins : inserts) {
-            long bhRaw = 0;
-            if (ins.blockHeaderHandle() != null) {
-                bhRaw = ins.blockHeaderHandle().rawHandle();
-            }
-            String bname = hmap.getOrDefault(bhRaw, "*UNKNOWN(h=" + bhRaw + ")*");
+            long bhRaw = ins.blockHeaderHandle() != null ? ins.blockHeaderHandle().rawHandle() : 0;
+            String bname = handleNameMap.getOrDefault(bhRaw, "*UNKNOWN*");
             refCount.put(bname, refCount.getOrDefault(bname, 0) + 1);
         }
 
@@ -130,35 +158,32 @@ public class BlockReport {
             System.out.printf("  - '%s': %d 次%n", e.getKey(), e.getValue());
         }
 
-        // INSERT 详细
-        System.out.println("\n【INSERT 详情】(前 25 个):");
-        for (int i = 0; i < Math.min(25, inserts.size()); i++) {
+        // INSERT 详情
+        System.out.println("\n【INSERT 详情】(前 30 个):");
+        for (int i = 0; i < Math.min(30, inserts.size()); i++) {
             DwgInsert ins = inserts.get(i);
             long bhRaw = ins.blockHeaderHandle() != null ? ins.blockHeaderHandle().rawHandle() : 0;
-            String bname = hmap.getOrDefault(bhRaw, "*UNKNOWN*");
+            String bname = handleNameMap.getOrDefault(bhRaw, "*UNKNOWN*");
             double ix=0, iy=0, iz=0;
             if (ins.insertionPoint() != null) {
                 ix = ins.insertionPoint().x(); iy = ins.insertionPoint().y(); iz = ins.insertionPoint().z();
             }
-            double rot = ins.rotation();
-            System.out.printf("  [%d] block='%s' pos=(%.2f,%.2f,%.2f) scale=(%.4f,%.4f,%.4f) rot=%.4f%n",
-                i+1, bname, ix, iy, iz, ins.xScale(), ins.yScale(), ins.zScale(), rot);
+            System.out.printf("  [%d] block='%s' pos=(%.2f,%.2f,%.2f) rot=%.4f%n",
+                i+1, bname, ix, iy, iz, ins.rotation());
         }
 
         System.out.println("\n---------------------------------------");
         System.out.println("总计: " + blockHeaders.size() + " 个块定义, " + total + " 个 INSERT 引用");
 
         // 类型统计
-        System.out.println("\n=== 对象类型统计 (Top 20) ===");
-        List<Map.Entry<Integer, Integer>> sortedTypes = new ArrayList<>(typeCount.entrySet());
-        sortedTypes.sort((a, b) -> b.getValue().compareTo(a.getValue()));
-        for (int i = 0; i < Math.min(20, sortedTypes.size()); i++) {
-            Map.Entry<Integer, Integer> e = sortedTypes.get(i);
-            System.out.printf("  type=%3d (0x%02X): %4d  %s%n",
-                e.getKey(), e.getKey(), e.getValue(),
-                DwgObjectType.fromCode(e.getKey()) != null
-                    ? DwgObjectType.fromCode(e.getKey()).name()
-                    : "UNKNOWN_" + e.getKey());
+        System.out.println("\n=== 对象类型统计 (Top 15) ===");
+        List<Map.Entry<Integer, Integer>> sorted = new ArrayList<>(typeCount.entrySet());
+        sorted.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+        for (int i = 0; i < Math.min(15, sorted.size()); i++) {
+            Map.Entry<Integer, Integer> e = sorted.get(i);
+            DwgObjectType t = DwgObjectType.fromCode(e.getKey());
+            String name = t != null ? t.name() : "UNKNOWN";
+            System.out.printf("  type=%3d (0x%02X): %4d  %s%n", e.getKey(), e.getKey(), e.getValue(), name);
         }
     }
 
