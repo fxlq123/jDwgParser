@@ -1,0 +1,119 @@
+DWG 文件内容测试报告
+文件: 210-83-C30302 拨杆座（改2024.06.06）--30件.DWG.dwg
+大小: 74214 字节
+版本: AutoCAD R2000 (AC1015)
+
+有效对象: 19 个
+对象类型: 10 种
+BLOCK_HEADER: 1 个
+INSERT: 2 个
+文本字符串: 123 个
+
+类型统计:
+  0x07 INSERT (BLOCK_REF)             : 2
+  0x13 TYPE_0x13                      : 4
+  0x2C SPLINE                         : 6
+  0x30 BLOCK_HEADER                   : 1
+  0x32 LAYER_INDEX                    : 1
+  0x34 SPATIAL_INDEX                  : 1
+  0x46 LINE_CONTROL                   : 1
+  0x6C TYPE_0x6C                      : 1
+  0xE4 TYPE_0xE4                      : 1
+  0xEC TYPE_0xEC                      : 1
+
+文本字符串列表:
+  0P × 8
+  TXT × 7
+  I-Me5 × 3
+  1R × 3
+  9V × 3
+  *Paper_Space × 2
+  Standard × 2
+  0PPPP × 2
+  20 × 2
+  J0 × 2
+  kr7 × 2
+  V0 × 2
+  333 × 2
+  Sv × 2
+  ACAD_MLINESTYLE × 1
+  DWGPROPS × 1
+  SW_NOTE_0 × 1
+  SW_NOTE_0_1 × 1
+  SW_SFSYMBOL_0 × 1
+  SW_TABLEANNOTATION_0 × 1
+  _D × 1
+  _D_1 × 1
+  _D_2 × 1
+  _D_3 × 1
+  _D_4 × 1
+  _D_5 × 1
+  SW_CENTERMARKSYMBOL_0 × 1
+  SW_SFSYMBOL_1 × 1
+  _D_6 × 1
+  _D_7 × 1
+  _D_8 × 1
+  _D_9 × 1
+  _D_10 × 1
+  _D_11 × 1
+  _D_12 × 1
+  _D_13 × 1
+  C8 × 1
+  SW_CENTERMARKSYMBOL_1 × 1
+  _D_14 × 1
+  _D_15 × 1
+  _D_16 × 1
+  _D_17 × 1
+  _D_18 × 1
+  _D_19 × 1
+  _D_20 × 1
+  SW_CHAMFER_DIMENSION_0 × 1
+  SW_CHAMFER_DIMENSION_1 × 1
+  SW_CHAMFER_DIMENSION_2 × 1
+  _D_21 × 1
+  SW_CENTERMARKSYMBOL_2 × 1
+  *Model_Space × 1
+  txt × 1
+  SLDTEXTSTYLE0 × 1
+  SLDTEXTSTYLE1 × 1
+  SLDTEXTSTYLE2 × 1
+  SLDTEXTSTYLE3 × 1
+  SLDTEXTSTYLE4 × 1
+  SLDTEXTSTYLE5 × 1
+  SLDTEXTSTYLE6 × 1
+  Continuous × 1
+  HIDDEN × 1
+  PHANTOM × 1
+  CENTER × 1
+  CENTERX2 × 1
+  DOT2 × 1
+  ByBlock × 1
+  ByLayer × 1
+  *Active × 1
+  SSR × 1
+  ACAD × 1
+  ISO-25 × 1
+  SLDDIMSTYLE0 × 1
+  SLDDIMSTYLE1 × 1
+  SLDDIMSTYLE2 × 1
+  SLDDIMSTYLE3 × 1
+  Layout2 × 1
+  A2 × 1
+  A6 × 1
+  B0 × 1
+  B4 × 1
+  B8 × 1
+  C2 × 1
+  C6 × 1
+  D0 × 1
+  933332. × 1
+  Pf × 1
+  0z × 1
+  2q × 1
+  cfq × 1
+  VV × 1
+  2f × 1
+  SO × 1
+  SU × 1
+  Yn × 1
+  _F × 1
